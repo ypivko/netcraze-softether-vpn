@@ -1,6 +1,8 @@
 # Netcraze Ultra SoftEther VPN + Split Tunneling
 
-SoftEther VPN client with Russia-bypass split tunneling for Netcraze Ultra (NC-1812) routers running NDMS.
+SoftEther VPN client with Russia-bypass split tunneling for Netcraze Ultra (NC-1812) routers running NDMS 5.x.
+
+See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the troubleshooting runbook.
 
 ## Architecture
 
@@ -16,35 +18,48 @@ LAN devices (192.168.2.0/24)
                --> NL VPS (SoftEther TCP 443)
 ```
 
+**Key persistence mechanism:** NDMS periodically rebuilds ALL iptables chains, wiping custom rules. The hook in `ndm/netfilter.d/10-vpn-split.sh` is called automatically by NDMS after every rebuild and restores mangle/filter/nat rules, disables fastnat, and restores the table 100 route. A 5-minute cron watchdog acts as a secondary safety net.
+
+## Files
+
+| File | Path on router | Description |
+|------|---------------|-------------|
+| `vpn-split.sh` | `/opt/etc/vpn-split.sh` | Main script: `start` / `stop` / `fix` / `status` |
+| `S99vpnsplit` | `/opt/etc/init.d/S99vpnsplit` | Entware init script (runs after S05vpnclient on boot) |
+| `vpn-watchdog.sh` | `/opt/etc/vpn-watchdog.sh` | Cron watchdog every 5 min: reconnects VPN if down, calls `fix` |
+| `update-russia-list.sh` | `/opt/etc/update-russia-list.sh` | Downloads Russia IP prefixes from RIPE (weekly cron) |
+| `ndm/netfilter.d/10-vpn-split.sh` | `/opt/etc/ndm/netfilter.d/10-vpn-split.sh` | **NDMS netfilter hook** — restores all rules after every NDMS iptables rebuild |
+| `DIAGNOSTICS.md` | — | Troubleshooting runbook |
+
 ## Prerequisites
 
 - Netcraze Ultra NC-1812 (or compatible Keenetic/NDMS router, aarch64)
-- NDMS 3.7+ with OPKG component
+- NDMS 5.x with OPKG component
 - Entware installed on internal storage or USB
-- SoftEther VPN server with TAP bridge
+- SoftEther VPN server with TAP bridge on the remote VPS
 
 ## Installation
 
 ### 1. Install Entware
 
-```
+```sh
 # In NDMS CLI (SSH port 22):
 opkg disk storage:/ https://bin.entware.net/aarch64-k3.10/installer/aarch64-installer.tar.gz
 ```
 
 ### 2. Install packages
 
-```bash
+```sh
 # SSH to Entware shell (port 222, default password: keenetic)
 ssh -p 222 root@<router-ip>
 
 opkg update
-opkg install softethervpn5-client ipset iptables curl python3-light
+opkg install softethervpn5-client ipset iptables curl
 ```
 
 ### 3. Configure SoftEther VPN client
 
-```bash
+```sh
 # Start vpnclient
 cd /opt/libexec/softethervpn && ./vpnclient start
 
@@ -54,86 +69,100 @@ vpncmd /CLIENT localhost /CMD AccountCreate conn1 /SERVER:<vpn-server>:443 /HUB:
 vpncmd /CLIENT localhost /CMD AccountPasswordSet conn1 /PASSWORD:<pass> /TYPE:standard
 vpncmd /CLIENT localhost /CMD AccountStartupSet conn1
 vpncmd /CLIENT localhost /CMD AccountConnect conn1
-
-# Assign static IP on vpn_vpn (DHCP may not work with TAP bridge)
-ip addr add <vpn-ip>/24 dev vpn_vpn
 ```
 
-### 4. Deploy scripts
+### 4. Edit vpn-split.sh
 
-```bash
-# Copy scripts to router
+Set these variables at the top:
+
+```sh
+VPN_IP="192.168.30.11"    # static IP for vpn_vpn (assigned by the script, not DHCP)
+VPN_GW="192.168.30.1"     # VPN gateway (TAP bridge IP on the VPS)
+SE_SERVER="<vps-ip>"      # SoftEther server IP (excluded from VPN to prevent loop)
+AWG_SERVER="<other-ip>"   # any other server IPs to exclude from VPN
+```
+
+### 5. Deploy scripts
+
+```sh
 scp -P 222 vpn-split.sh root@<router-ip>:/opt/etc/
 scp -P 222 S99vpnsplit root@<router-ip>:/opt/etc/init.d/
 scp -P 222 vpn-watchdog.sh root@<router-ip>:/opt/etc/
 scp -P 222 update-russia-list.sh root@<router-ip>:/opt/etc/
+scp -P 222 ndm/netfilter.d/10-vpn-split.sh root@<router-ip>:/opt/etc/ndm/netfilter.d/
 
-# Make executable
-ssh -p 222 root@<router-ip> 'chmod +x /opt/etc/vpn-split.sh /opt/etc/init.d/S99vpnsplit /opt/etc/vpn-watchdog.sh /opt/etc/update-russia-list.sh'
+ssh -p 222 root@<router-ip> 'chmod +x \
+  /opt/etc/vpn-split.sh \
+  /opt/etc/init.d/S99vpnsplit \
+  /opt/etc/vpn-watchdog.sh \
+  /opt/etc/update-russia-list.sh \
+  /opt/etc/ndm/netfilter.d/10-vpn-split.sh'
 ```
 
-### 5. Generate Russia IP list
+### 6. Generate Russia IP list
 
-```bash
+```sh
 ssh -p 222 root@<router-ip> '/opt/etc/update-russia-list.sh'
 ```
 
-### 6. Configure vpn-split.sh
-
-Edit `vpn-split.sh` and set:
-- `VPN_IP` - static IP for vpn_vpn interface
-- `VPN_GW` - VPN gateway (TAP bridge IP on server)
-- `SE_SERVER` - SoftEther server IP (excluded from VPN to prevent loop)
-- `AWG_SERVER` - any other server IPs to exclude from VPN
-
 ### 7. Start split tunneling
 
-```bash
-/opt/etc/vpn-split.sh start
+```sh
+ssh -p 222 root@<router-ip> '/opt/etc/init.d/S99vpnsplit start'
 ```
 
 ### 8. Setup cron
 
-```bash
+```sh
+ssh -p 222 root@<router-ip> '
 mkdir -p /opt/var/spool/cron/crontabs
-cat > /opt/var/spool/cron/crontabs/root << 'EOF'
+cat > /opt/var/spool/cron/crontabs/root << EOF
 */5 * * * * /opt/etc/vpn-watchdog.sh
 0 4 * * 0 /opt/etc/update-russia-list.sh
 EOF
-killall crond; /opt/sbin/crond -L /opt/var/log/cron.log
+killall crond 2>/dev/null; /opt/sbin/crond -L /opt/var/log/cron.log'
 ```
-
-## Files
-
-| File | Description |
-|------|-------------|
-| `vpn-split.sh` | Main split tunneling script (start/stop/status) |
-| `S99vpnsplit` | Entware init script (runs after S05vpnclient) |
-| `vpn-watchdog.sh` | Cron watchdog - reconnects VPN if down |
-| `update-russia-list.sh` | Downloads Russia IP prefixes from RIPE |
 
 ## How it works
 
 1. **ipset** `russia` loaded with ~11250 Russian IP prefixes from RIPE
-2. **iptables mangle** PREROUTING: LAN traffic to Russian IPs gets `RETURN` (no mark), everything else gets `MARK 0x1`
+2. **iptables mangle** PREROUTING: traffic from LAN to Russian IPs → `RETURN` (no mark); everything else → `MARK 0x1`
 3. **ip rule**: packets with fwmark `0x1` use routing table 100
-4. **Table 100**: default route via VPN gateway through `vpn_vpn`
-5. **iptables FORWARD**: explicit ACCEPT for LAN<->vpn_vpn (NDMS FORWARD policy is DROP)
-6. **iptables nat MASQUERADE** on vpn_vpn interface
+4. **Table 100**: default route via `192.168.30.1 dev vpn_vpn`
+5. **iptables FORWARD**: explicit ACCEPT for LAN↔vpn_vpn (NDMS FORWARD policy is DROP)
+6. **MASQUERADE** on vpn_vpn (covered by NDMS `_NDM_MASQ` + explicit rule)
+7. **MSS clamp** to 1200 on vpn_vpn (SoftEther TCP/443 adds ~250 bytes overhead)
 
-## Important NDMS-specific notes
+## Quick reference
 
-- NDMS FORWARD chain policy is DROP - you MUST add explicit ACCEPT rules for vpn_vpn
-- `/etc/iproute2/rt_tables` does not exist on NDMS, but `ip rule` with numeric table IDs works fine
-- `iptables` must be installed from Entware (keenetic-specific build that sees NDMS chains)
-- DHCP on SoftEther TAP interface may not work - use static IP assignment
-- Entware SSH runs on port 222 (dropbear), NDMS SSH on port 22
+| Task | Command |
+|------|---------|
+| Status | `/opt/etc/vpn-split.sh status` |
+| Start split tunneling | `/opt/etc/vpn-split.sh start` |
+| Stop split tunneling | `/opt/etc/vpn-split.sh stop` |
+| Re-apply rules (idempotent) | `/opt/etc/vpn-split.sh fix` |
+| Full restart | `/opt/etc/init.d/S99vpnsplit restart` |
+| Watchdog log | `tail -50 /opt/var/log/vpn-watchdog.log` |
+| NDMS hook log | `cat /tmp/hook.log` |
+| Update Russia list | `/opt/etc/update-russia-list.sh` |
+| Add IP to Russia list | `ipset add russia <IP> && echo "add russia <IP>" >> /opt/etc/russia.ipset` |
+| Check site routing | `ipset test russia <IP>` |
+
+## Known issues
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `ipset restore` fails on "create" line | ipset v7.21 ignores `-exist` for `create` when set exists | Script uses `flush` + `grep "^add" \| ipset restore -exist` |
+| table 100 cleared after vpn_vpn reconnects | Kernel removes routes when interface goes down | `vpn-split.sh fix` restores it; netfilter hook also checks every rebuild |
+| `nf_conntrack_fastnat=1` causes connection resets after ~50KB | NDMS resets fastnat to 1 on every iptables rebuild | Netfilter hook sets it to 0 on every rebuild |
+| NDMS wipes all custom iptables chains | NDMS rebuilds netfilter tables on any network event | Netfilter hook in `ndm/netfilter.d/` is called automatically after each rebuild |
 
 ## Rollback
 
-```bash
-# Quick - remove split tunneling rules:
-ssh -p 222 root@<router-ip> '/opt/etc/vpn-split.sh stop'
+```sh
+# Stop split tunneling (VPN stays connected, all traffic goes via WAN):
+/opt/etc/vpn-split.sh stop
 
-# Or reboot the router (everything restarts automatically via init scripts)
+# Or reboot (everything restarts automatically via Entware init scripts):
+reboot
 ```
