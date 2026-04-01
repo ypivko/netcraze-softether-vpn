@@ -54,7 +54,7 @@ opkg disk storage:/ https://bin.entware.net/aarch64-k3.10/installer/aarch64-inst
 ssh -p 222 root@<router-ip>
 
 opkg update
-opkg install softethervpn5-client ipset iptables curl
+opkg install softethervpn5-client ipset iptables curl python3 python3-light
 ```
 
 ### 3. Configure SoftEther VPN client
@@ -85,11 +85,12 @@ AWG_SERVER="<other-ip>"   # any other server IPs to exclude from VPN
 ### 5. Deploy scripts
 
 ```sh
-scp -P 222 vpn-split.sh root@<router-ip>:/opt/etc/
-scp -P 222 S99vpnsplit root@<router-ip>:/opt/etc/init.d/
-scp -P 222 vpn-watchdog.sh root@<router-ip>:/opt/etc/
-scp -P 222 update-russia-list.sh root@<router-ip>:/opt/etc/
-scp -P 222 ndm/netfilter.d/10-vpn-split.sh root@<router-ip>:/opt/etc/ndm/netfilter.d/
+# Note: use -O flag — Entware's dropbear SSH has no sftp-server
+scp -O -P 222 vpn-split.sh root@<router-ip>:/opt/etc/
+scp -O -P 222 S99vpnsplit root@<router-ip>:/opt/etc/init.d/
+scp -O -P 222 vpn-watchdog.sh root@<router-ip>:/opt/etc/
+scp -O -P 222 update-russia-list.sh root@<router-ip>:/opt/etc/
+scp -O -P 222 ndm/netfilter.d/10-vpn-split.sh root@<router-ip>:/opt/etc/ndm/netfilter.d/
 
 ssh -p 222 root@<router-ip> 'chmod +x \
   /opt/etc/vpn-split.sh \
@@ -152,6 +153,8 @@ killall crond 2>/dev/null; /opt/sbin/crond -L /opt/var/log/cron.log'
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
+| `scp` fails with "sftp-server: not found" | Entware dropbear has no sftp-server, modern `scp` defaults to SFTP protocol | Use `scp -O` (force legacy SCP protocol) |
+| `ModuleNotFoundError: No module named 'json'` | `python3-base` alone doesn't include the json module — it's in `python3-light` | Install `python3-light` explicitly alongside `python3` |
 | `ipset restore` fails on "create" line | ipset v7.21 ignores `-exist` for `create` when set exists | Script uses `flush` + `grep "^add" \| ipset restore -exist` |
 | table 100 cleared after vpn_vpn reconnects | Kernel removes routes when interface goes down | `vpn-split.sh fix` restores it; netfilter hook also checks every rebuild |
 | `nf_conntrack_fastnat=1` causes connection resets after ~50KB | NDMS resets fastnat to 1 on every iptables rebuild | Netfilter hook sets it to 0 on every rebuild |
