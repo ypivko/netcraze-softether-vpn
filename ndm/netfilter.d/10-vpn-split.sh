@@ -16,6 +16,15 @@ echo 0 > /proc/sys/net/netfilter/nf_conntrack_fastnat 2>/dev/null
 echo 0 > /proc/sys/net/netfilter/nf_conntrack_fastroute 2>/dev/null
 echo 0 > /proc/sys/net/hwnat/extif_offload 2>/dev/null
 
+VPN_GW="192.168.30.1"
+TABLE_ID=100
+
+# Restore routing table 100 if missing (cleared when vpn_vpn reconnects)
+if ip link show "$VPN_IF" >/dev/null 2>&1; then
+    ip route show table $TABLE_ID | grep -q "^default" || \
+        ip route replace default via $VPN_GW dev $VPN_IF table $TABLE_ID 2>/dev/null
+fi
+
 case "$table" in
   mangle)
     # Load ipset if needed
