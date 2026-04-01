@@ -30,8 +30,13 @@ case "$1" in
         echo "ERROR: VPN interface did not appear after 30s"
         exit 1
     fi
-    # Load ipset
-    ipset restore < $IPSET_FILE 2>/dev/null
+    # Load ipset (ipset restore fails if set exists; use flush+grep workaround)
+    if ipset list russia >/dev/null 2>&1; then
+        ipset flush russia 2>/dev/null
+        grep "^add " $IPSET_FILE | ipset restore -exist 2>/dev/null
+    else
+        ipset restore < $IPSET_FILE 2>/dev/null
+    fi
     # Start split tunneling
     $SPLIT_SCRIPT start
     echo "VPN split tunneling is UP."

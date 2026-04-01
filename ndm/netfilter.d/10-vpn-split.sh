@@ -19,12 +19,12 @@ echo 0 > /proc/sys/net/hwnat/extif_offload 2>/dev/null
 case "$table" in
   mangle)
     # Load ipset if needed
+    # Note: ipset restore fails on "create" line if set exists — use flush+grep workaround
     if ! ipset list russia >/dev/null 2>&1; then
-        ipset create russia hash:net hashsize 16384 maxelem 65536
-    fi
-    if [ "$(ipset list russia 2>/dev/null | grep -c '^[0-9]')" -lt 1000 ]; then
+        ipset restore < "$IPSET_FILE" 2>/dev/null
+    elif [ "$(ipset list russia 2>/dev/null | grep -c '^[0-9]')" -lt 1000 ]; then
         ipset flush russia 2>/dev/null
-        ipset restore -exist < "$IPSET_FILE" 2>/dev/null
+        grep "^add " "$IPSET_FILE" | ipset restore -exist 2>/dev/null
     fi
 
     # Mark non-Russia LAN traffic for VPN routing

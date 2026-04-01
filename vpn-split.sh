@@ -21,11 +21,12 @@ disable_fastnat() {
 
 load_ipset() {
     if ! ipset list russia >/dev/null 2>&1; then
-        ipset create russia hash:net hashsize 16384 maxelem 65536
+        ipset restore < "$IPSET_FILE" 2>/dev/null
+        return
     fi
     if [ "$(ipset list russia 2>/dev/null | grep -c '^[0-9]')" -lt 1000 ]; then
         ipset flush russia 2>/dev/null
-        ipset restore -exist < "$IPSET_FILE" 2>/dev/null
+        grep "^add " "$IPSET_FILE" | ipset restore -exist 2>/dev/null
     fi
 }
 
@@ -73,6 +74,11 @@ case "$1" in
     echo "VPN split tunneling started."
     ;;
   fix)
+    # Also restore route in table 100 if missing (lost after vpn_vpn reconnect)
+    if ip link show $VPN_IF >/dev/null 2>&1; then
+        ip route show table $TABLE_ID | grep -q "^default" || \
+            ip route replace default via $VPN_GW dev $VPN_IF table $TABLE_ID
+    fi
     apply_all
     ;;
   stop)
