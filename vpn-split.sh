@@ -4,9 +4,9 @@
 # Watchdog runs every minute and calls "fix" to restore missing rules.
 
 VPN_IF="vpn_vpn"
-VPN_IP="192.168.30.11"
+VPN_IP="192.168.30.12"
 VPN_GW="192.168.30.1"
-LAN="192.168.2.0/24"
+LAN="192.168.1.0/24"
 TABLE_ID=100
 MARK=0x1
 SE_SERVER="188.137.180.77"

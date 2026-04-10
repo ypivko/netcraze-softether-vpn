@@ -3,9 +3,9 @@
 
 VPNCMD="/opt/bin/vpncmd"
 IPSET_FILE="/opt/etc/russia.ipset"
-SPLIT_SCRIPT="/opt/etc/vpn-split.sh"
+SPLIT_SCRIPT="/opt/bin/vpn-split.sh"
 VPN_IF="vpn_vpn"
-ACCOUNT="conn1"
+ACCOUNT="vpn_account"
 
 wait_for_interface() {
     local i=0

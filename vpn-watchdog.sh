@@ -4,9 +4,9 @@
 
 VPN_IF="vpn_vpn"
 VPNCMD="/opt/bin/vpncmd"
-SPLIT="/opt/etc/vpn-split.sh"
+SPLIT="/opt/bin/vpn-split.sh"
 LOG="/opt/var/log/vpn-watchdog.log"
-ACCOUNT="conn1"
+ACCOUNT="vpn_account"
 
 # Rotate log if > 100KB
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null)" -gt 100000 ] && : > "$LOG"

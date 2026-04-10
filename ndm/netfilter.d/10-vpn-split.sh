@@ -1,6 +1,8 @@
 #!/bin/sh
 # Keenetic NDMS netfilter hook — called automatically when NDMS rewrites iptables
 # Variables provided by NDMS: $table (filter/nat/mangle/raw), $type (iptables/ip6tables)
+# PATH must be set explicitly — NDMS hook environment does not include /opt/sbin
+export PATH=/opt/sbin:/opt/bin:$PATH
 
 [ "$type" = "ip6tables" ] && exit 0  # Skip IPv6
 
