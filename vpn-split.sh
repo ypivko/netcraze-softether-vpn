@@ -1,16 +1,15 @@
 #!/bin/sh
-# VPN Split Tunneling for Netcraze Ultra (NDMS)
+# VPN Split Tunneling for Keenetic/NDMS routers
 # NDMS periodically rebuilds ALL iptables chains — all rules must be re-applied.
-# Watchdog runs every minute and calls "fix" to restore missing rules.
+# Watchdog runs every 5 min and calls "fix" to restore missing rules.
 
 VPN_IF="vpn_vpn"
-VPN_IP="192.168.30.12"
-VPN_GW="192.168.30.1"
-LAN="192.168.1.0/24"
+VPN_IP="192.168.30.12"      # unique per client on the shared VPN hub
+VPN_GW="192.168.30.1"       # VPN gateway (TAP bridge IP on the VPS)
+LAN="192.168.1.0/24"        # local LAN subnet
 TABLE_ID=100
 MARK=0x1
-SE_SERVER="188.137.180.77"
-AWG_SERVER="81.91.176.218"
+SE_SERVER="188.137.180.77"  # SoftEther server IP (excluded from VPN)
 IPSET_FILE="/opt/etc/russia.ipset"
 
 disable_fastnat() {
@@ -35,12 +34,13 @@ apply_all() {
     load_ipset
 
     # mangle PREROUTING — mark non-Russia traffic
-    if ! iptables -t mangle -C PREROUTING -s $LAN -j MARK --set-mark $MARK 2>/dev/null; then
-        iptables -t mangle -A PREROUTING -s $LAN -m set --match-set russia dst -j RETURN
+    # Each rule checked individually: if ipset isn't loaded yet, other rules still apply
+    iptables -t mangle -C PREROUTING -s $LAN -m set --match-set russia dst -j RETURN 2>/dev/null || \
+        iptables -t mangle -A PREROUTING -s $LAN -m set --match-set russia dst -j RETURN 2>/dev/null
+    iptables -t mangle -C PREROUTING -s $LAN -d $SE_SERVER -j RETURN 2>/dev/null || \
         iptables -t mangle -A PREROUTING -s $LAN -d $SE_SERVER -j RETURN
-        iptables -t mangle -A PREROUTING -s $LAN -d $AWG_SERVER -j RETURN
+    iptables -t mangle -C PREROUTING -s $LAN -j MARK --set-mark $MARK 2>/dev/null || \
         iptables -t mangle -A PREROUTING -s $LAN -j MARK --set-mark $MARK
-    fi
 
     # filter FORWARD — allow VPN traffic
     iptables -C FORWARD -s $LAN -o $VPN_IF -j ACCEPT 2>/dev/null || \
@@ -67,7 +67,6 @@ case "$1" in
     ip addr show $VPN_IF 2>/dev/null | grep -q "$VPN_IP" || \
         ip addr add ${VPN_IP}/24 dev $VPN_IF
     ip rule add to $SE_SERVER table main priority 50 2>/dev/null
-    ip rule add to $AWG_SERVER table main priority 51 2>/dev/null
     ip rule add fwmark $MARK table $TABLE_ID priority 100 2>/dev/null
     ip route replace default via $VPN_GW dev $VPN_IF table $TABLE_ID
     apply_all
@@ -85,7 +84,6 @@ case "$1" in
     echo "Stopping VPN split tunneling..."
     iptables -t mangle -D PREROUTING -s $LAN -m set --match-set russia dst -j RETURN 2>/dev/null
     iptables -t mangle -D PREROUTING -s $LAN -d $SE_SERVER -j RETURN 2>/dev/null
-    iptables -t mangle -D PREROUTING -s $LAN -d $AWG_SERVER -j RETURN 2>/dev/null
     iptables -t mangle -D PREROUTING -s $LAN -j MARK --set-mark $MARK 2>/dev/null
     iptables -t mangle -D FORWARD -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
     iptables -t mangle -D FORWARD -i $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
@@ -95,7 +93,6 @@ case "$1" in
     iptables -t nat -D POSTROUTING -o $VPN_IF -j MASQUERADE 2>/dev/null
     ip rule del fwmark $MARK table $TABLE_ID 2>/dev/null
     ip rule del to $SE_SERVER table main 2>/dev/null
-    ip rule del to $AWG_SERVER table main 2>/dev/null
     ip route del default table $TABLE_ID 2>/dev/null
     echo "VPN split tunneling stopped."
     ;;
@@ -103,7 +100,7 @@ case "$1" in
     echo "=== FASTNAT ==="
     echo "fastnat=$(cat /proc/sys/net/netfilter/nf_conntrack_fastnat 2>/dev/null) fastroute=$(cat /proc/sys/net/netfilter/nf_conntrack_fastroute 2>/dev/null) hwnat=$(cat /proc/sys/net/hwnat/extif_offload 2>/dev/null)"
     echo "=== MANGLE PREROUTING ==="
-    iptables -t mangle -L PREROUTING -n 2>&1 | grep -E "russia|MARK|188.137|81.91"
+    iptables -t mangle -L PREROUTING -n -v 2>&1 | grep -E "russia|MARK|$SE_SERVER"
     echo "=== FORWARD ==="
     iptables -L FORWARD -n 2>&1 | grep vpn_vpn
     echo "=== NAT ==="

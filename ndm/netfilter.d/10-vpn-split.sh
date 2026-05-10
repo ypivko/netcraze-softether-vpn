@@ -7,9 +7,8 @@ export PATH=/opt/sbin:/opt/bin:$PATH
 [ "$type" = "ip6tables" ] && exit 0  # Skip IPv6
 
 VPN_IF="vpn_vpn"
-LAN="192.168.2.0/24"
+LAN="192.168.1.0/24"        # must match vpn-split.sh
 SE_SERVER="188.137.180.77"
-AWG_SERVER="81.91.176.218"
 MARK=0x1
 IPSET_FILE="/opt/etc/russia.ipset"
 
@@ -39,12 +38,13 @@ case "$table" in
     fi
 
     # Mark non-Russia LAN traffic for VPN routing
-    iptables -t mangle -C PREROUTING -s $LAN -j MARK --set-mark $MARK 2>/dev/null || {
-        iptables -t mangle -A PREROUTING -s $LAN -m set --match-set russia dst -j RETURN
+    # Each rule checked individually to prevent partial failures
+    iptables -t mangle -C PREROUTING -s $LAN -m set --match-set russia dst -j RETURN 2>/dev/null || \
+        iptables -t mangle -A PREROUTING -s $LAN -m set --match-set russia dst -j RETURN 2>/dev/null
+    iptables -t mangle -C PREROUTING -s $LAN -d $SE_SERVER -j RETURN 2>/dev/null || \
         iptables -t mangle -A PREROUTING -s $LAN -d $SE_SERVER -j RETURN
-        iptables -t mangle -A PREROUTING -s $LAN -d $AWG_SERVER -j RETURN
+    iptables -t mangle -C PREROUTING -s $LAN -j MARK --set-mark $MARK 2>/dev/null || \
         iptables -t mangle -A PREROUTING -s $LAN -j MARK --set-mark $MARK
-    }
 
     # MSS clamp for VPN interface
     iptables -t mangle -C FORWARD -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \

@@ -178,6 +178,7 @@ EOF
 | `nf_conntrack_fastnat=1` causes connection resets after ~50KB | NDMS resets fastnat to 1 on every iptables rebuild | Netfilter hook sets it to 0 on every rebuild |
 | NDMS wipes all custom iptables chains | NDMS rebuilds netfilter tables on any network event | Netfilter hook in `ndm/netfilter.d/` is called automatically after each rebuild |
 | `iptables: not found` in hook | NDMS hook runs in restricted environment without `/opt/sbin` in PATH | `10-vpn-split.sh` sets `export PATH=/opt/sbin:/opt/bin:$PATH` at startup |
+| ipset RETURN rule missing after start | ipset not yet loaded when mangle rules are added in a single if-block | Rules are now checked individually; ipset rule failure doesn't block others |
 
 ## Rollback
 
@@ -219,9 +220,21 @@ Each file in `cron.d` is a system crontab with format: `min hour dom mon dow use
 0 3 * * 0 root /opt/bin/update-russia-list.sh
 ```
 
-**Multiple VPN clients on the same hub:** if another device (e.g. MikroTik container) is already connected to the same SoftEther hub and occupies a static IP (e.g. 192.168.30.11), assign a different `VPN_IP` in `vpn-split.sh`:
+**Multiple VPN clients on the same hub:** each client needs a unique TAP IP. Update `VPN_IP` in `vpn-split.sh`:
 ```sh
-VPN_IP="192.168.30.12"   # unique per client on the shared hub
+VPN_IP="192.168.30.13"   # unique per client on the shared hub
 ```
 
+Current TAP IP allocations:
+| IP | Device |
+|----|--------|
+| 192.168.30.1 | NL VPS (gateway) |
+| 192.168.30.10 | MikroTik RB4011 |
+| 192.168.30.11 | Netcraze Ultra NC-1812 |
+| 192.168.30.12 | Keenetic KN-1011 #1 |
+| 192.168.30.13 | Keenetic KN-1011 #2 |
+| 192.168.30.20 | MikroTik hAP ax² |
+
 **Entware startup** is handled by `opt-ndmsv2` package, which registers an NDMS hook that starts all `/opt/etc/init.d/S??*` scripts at boot. No additional configuration needed.
+
+**No python3?** The `update-russia-list.sh` script auto-detects python3 availability. On routers without it (limited storage), it falls back to shell-only JSON parsing via `grep`.
