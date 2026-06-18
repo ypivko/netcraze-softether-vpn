@@ -11,6 +11,13 @@ TABLE_ID=100
 MARK=0x1
 SE_SERVER="188.137.180.77"  # SoftEther server IP (excluded from VPN)
 IPSET_FILE="/opt/etc/russia.ipset"
+# MSS clamp for traffic entering the tunnel. Lower this if the WAN uplink to the
+# VPS has a small path-MTU: symptom is bulk transfers / Telegram stalling (the
+# server's full-size segments are dropped on the WAN→VPS path) while small/
+# interactive traffic still works. Tune per deployment — 1200 suits Ethernet
+# WANs; constrained links (PPPoE / double-NAT / extra encapsulation) need ~1000.
+# See DIAGNOSTICS.md §6.3. Must match the value in ndm/netfilter.d/10-vpn-split.sh.
+MSS_CLAMP="1200"
 
 disable_fastnat() {
     echo 0 > /proc/sys/net/netfilter/nf_conntrack_fastnat 2>/dev/null
@@ -57,8 +64,8 @@ apply_all() {
         iptables -t mangle -A FORWARD -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     iptables -t mangle -C FORWARD -i $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
         iptables -t mangle -A FORWARD -i $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    iptables -t mangle -C POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null || \
-        iptables -t mangle -A POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
+    iptables -t mangle -C POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null || \
+        iptables -t mangle -A POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP
 }
 
 case "$1" in
@@ -87,7 +94,7 @@ case "$1" in
     iptables -t mangle -D PREROUTING -s $LAN -j MARK --set-mark $MARK 2>/dev/null
     iptables -t mangle -D FORWARD -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
     iptables -t mangle -D FORWARD -i $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-    iptables -t mangle -D POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null
+    iptables -t mangle -D POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null
     iptables -D FORWARD -s $LAN -o $VPN_IF -j ACCEPT 2>/dev/null
     iptables -D FORWARD -i $VPN_IF -d $LAN -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
     iptables -t nat -D POSTROUTING -o $VPN_IF -j MASQUERADE 2>/dev/null

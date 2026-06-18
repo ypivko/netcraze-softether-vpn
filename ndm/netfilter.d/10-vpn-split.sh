@@ -11,6 +11,7 @@ LAN="192.168.1.0/24"        # must match vpn-split.sh
 SE_SERVER="188.137.180.77"
 MARK=0x1
 IPSET_FILE="/opt/etc/russia.ipset"
+MSS_CLAMP="1200"            # lower (~1000) if WAN→VPS path-MTU is small; must match vpn-split.sh
 
 # Disable NDMS fast NAT (causes connection resets for forwarded VPN traffic)
 echo 0 > /proc/sys/net/netfilter/nf_conntrack_fastnat 2>/dev/null
@@ -51,8 +52,8 @@ case "$table" in
         iptables -t mangle -A FORWARD -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     iptables -t mangle -C FORWARD -i $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
         iptables -t mangle -A FORWARD -i $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    iptables -t mangle -C POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200 2>/dev/null || \
-        iptables -t mangle -A POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
+    iptables -t mangle -C POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null || \
+        iptables -t mangle -A POSTROUTING -o $VPN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP
     ;;
 
   filter)

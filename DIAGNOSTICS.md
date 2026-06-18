@@ -210,24 +210,40 @@ cat /tmp/hook.log 2>/dev/null | tail -20
 
 → Проверить: `ip link show` — нет ли интерфейсов в UP/DOWN состоянии.
 
-### 6.3 MTU / фрагментация
-SoftEther TCP/443 добавляет overhead. MSS 1200 должен это покрывать, но если нет:
+### 6.3 PMTU black-hole / MSS clamp слишком велик для WAN
+**Самый частый симптом после смены WAN-провайдера/аплинка:** bulk-трафик виснет
+(Telegram не грузит чаты/медиа, большие страницы/загрузки стопорятся), а мелкий
+интерактив и пуши работают. Соединение УСТАНАВЛИВАЕТСЯ (TLS-хендшейк = мелкие
+пакеты проходит), а потом встаёт — это path-MTU black-hole: полноразмерные
+сегменты сервера дропаются на пути WAN→VPS. MSS-clamp (по умолчанию 1200)
+подобран под прежний WAN и стал велик для нового (PPPoE / двойной NAT / лишняя
+инкапсуляция уменьшают effective MTU).
 
+**Как подтвердить (диагностику удобнее вести с VPS — у клиента ICMP на vpn_vpn
+часто режется фаерволом NDMS, и "ping не идёт" ≠ "туннель мёртв"):**
 ```sh
-# Проверить MTU на vpn_vpn
-ip link show vpn_vpn | grep mtu
-
-# Тест на фрагментацию (большой пинг без фрагментации)
-ping -M do -s 1400 -c3 192.168.30.1  # через VPN
-ping -M do -s 1400 -c3 8.8.8.8 -I vpn_vpn
-# Если "Frag needed" → уменьшить MSS
+# На VPS: видно ли клиента в SoftEther + течёт ли его трафик
+vpncmd localhost /SERVER /PASSWORD:*** /ADMINHUB:VPN /CMD SessionList   # сессия должна быть
+# tcpdump на TAP сервера: сервер шлёт клиенту полные сегменты (~1188), но они
+# РЕТРАНСМИТЯТСЯ, а ack клиента не растёт = крупные пакеты дропаются:
+tcpdump -nni tap_tap_vpn "dst <client_tap_ip>" | grep -oE "length [0-9]+" | sort | uniq -c
+# Сравнить MSS в SYN рабочего и нерабочего клиента (см. "mss NNNN" в SYN).
 ```
 
-→ Изменить MSS в `/opt/etc/vpn-split.sh`:
+**Фикс — понизить `MSS_CLAMP`** (вынесен в переменную в начале обоих скриптов):
 ```sh
-# Найти строку set-mss 1200, уменьшить до 1180 или 1160
-iptables -t mangle -R POSTROUTING <NUM> -o vpn_vpn -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1180
+# В /opt/etc/vpn-split.sh И /opt/etc/ndm/netfilter.d/10-vpn-split.sh:
+#   MSS_CLAMP="1000"     # с 1200; для совсем узких каналов — 900
+# Применить вживую без перезапуска:
+iptables -t mangle -D POSTROUTING -o vpn_vpn -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1200
+iptables -t mangle -A POSTROUTING -o vpn_vpn -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1000
+# Новое значение действует только на НОВЫЕ соединения — перезапустить приложение
+# (зависшие старые соединения добьются по таймауту).
 ```
+> Реальный кейс 2026-06-18 (офис Ефремова, переход на прямой WAN 81.95.136.98):
+> Telegram перестал грузиться, остальное работало; MSS 1200→1000 на vpn_vpn вылечил.
+> Временно лечилось и со стороны VPS: `iptables -I FORWARD -s/-d <client> -p tcp
+> --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1000` — но правильное место фикса роутер.
 
 ### 6.4 fastnat был включён (уже происходило ранее)
 ```sh
