@@ -5,6 +5,7 @@ SoftEther VPN client with Russia-bypass split tunneling for Keenetic/Netcraze ro
 Tested on:
 - **Netcraze Ultra NC-1812** (aarch64)
 - **Keenetic Giga KN-1011** (mips) — see [Router-specific notes](#router-specific-notes)
+- **Keenetic Giga KN-1012** (aarch64, NDMS 5.1, no public IP — managed via KeenDNS cloud) — see [KN-1012 notes](#keenetic-giga-kn-1012)
 
 See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the troubleshooting runbook.
 
@@ -29,7 +30,7 @@ LAN devices (192.168.1.0/24)
 | File | Path on router | Description |
 |------|---------------|-------------|
 | `vpn-split.sh` | `/opt/bin/vpn-split.sh` | Main script: `start` / `stop` / `fix` / `status` |
-| `S99vpnsplit` | `/opt/etc/init.d/S99vpnsplit` | Entware init script (runs after S05vpnclient on boot) |
+| `S99vpnsplit` | `/opt/etc/init.d/S99vpnsplit` | Entware init script (runs after S05vpnclient on boot); restores the table 100 route as soon as the tunnel is up |
 | `vpn-watchdog.sh` | `/opt/bin/vpn-watchdog.sh` | Cron watchdog every 5 min: reconnects VPN if down, calls `fix` |
 | `update-russia-list.sh` | `/opt/bin/update-russia-list.sh` | Downloads Russia IP prefixes from RIPE (weekly cron) |
 | `ndm/netfilter.d/10-vpn-split.sh` | `/opt/etc/ndm/netfilter.d/10-vpn-split.sh` | **NDMS netfilter hook** — restores all rules after every NDMS iptables rebuild |
@@ -62,7 +63,7 @@ Entware installs to the USB disk automatically. Feed: `http://bin.entware.net/mi
 ssh -p 222 root@<router-ip>
 
 opkg update
-opkg install softethervpn5-client ipset iptables curl python3-light
+opkg install softethervpn5-client ipset iptables curl python3-light cron iputils-ping
 ```
 
 > **Note:** `iptables` and `curl` are not pre-installed on all models. Install them explicitly.
@@ -81,6 +82,14 @@ vpncmd /CLIENT localhost /PASSWORD: /CMD AccountCreate vpn_account /SERVER:<vpn-
 vpncmd /CLIENT localhost /PASSWORD: /CMD AccountPasswordSet vpn_account /PASSWORD:<pass> /TYPE:standard
 vpncmd /CLIENT localhost /PASSWORD: /CMD AccountStartupSet vpn_account
 vpncmd /CLIENT localhost /PASSWORD: /CMD AccountConnect vpn_account
+```
+
+**Required:** enable bridge routing mode, otherwise SoftEther does not forward LAN traffic:
+
+```sh
+/opt/etc/init.d/S05vpnclient stop
+sed -i 's/bool RequireBridgeRoutingMode false/bool RequireBridgeRoutingMode true/' /opt/libexec/softethervpn/vpn_client.config
+/opt/etc/init.d/S05vpnclient start
 ```
 
 The account name `vpn_account` must match the `ACCOUNT=` variable in `S99vpnsplit` and `vpn-watchdog.sh`.
@@ -132,15 +141,26 @@ ssh -p 222 root@<router-ip> '/opt/etc/init.d/S99vpnsplit start'
 
 ### 8. Setup cron
 
+Add the jobs to `/opt/etc/crontab` (system crontab of Entware `cron`). Use **either** `/opt/etc/crontab` **or** `/opt/etc/cron.d/` — not both, otherwise every job runs twice.
+
 ```sh
 ssh -p 222 root@<router-ip> '
-opkg install cron
-mkdir -p /opt/etc/cron.d
-cat > /opt/etc/cron.d/vpnsplit << EOF
+cat >> /opt/etc/crontab << EOF
 */5 * * * * root /opt/bin/vpn-watchdog.sh
 0 3 * * 0 root /opt/bin/update-russia-list.sh
 EOF
+sed -i "s|^PATH=.*|PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin|" /opt/etc/crontab
 /opt/etc/init.d/S10cron restart'
+```
+
+> **PATH matters:** `/opt/bin` must come before `/usr/sbin`. The stock NDMS `/usr/sbin/ping` always exits with code 1, so with the default PATH the watchdog decides the tunnel is dead and reconnects it every 5 minutes.
+
+### 9. Change the default Entware root password
+
+Entware ships with `root` / `keenetic`. Change it right away:
+
+```sh
+ssh -p 222 root@<router-ip> passwd
 ```
 
 ## How it works
@@ -173,6 +193,10 @@ EOF
 |-------|-------|-----|
 | `scp` fails with "sftp-server: not found" | Entware dropbear has no sftp-server, modern `scp` defaults to SFTP protocol | Use `scp -O` (force legacy SCP protocol) |
 | `ModuleNotFoundError: No module named 'json'` | `python3-base` alone doesn't include the json module — it's in `python3-light` | Install `python3-light` explicitly |
+| Non-Russian traffic goes directly via WAN for up to 5 min after boot/reconnect | table 100 route is dropped while `vpn_vpn` has no session yet | `S99vpnsplit` runs `vpn-split.sh fix` in the background as soon as the VPN gateway answers ping |
+| Watchdog reconnects the tunnel every run | NDMS `/usr/sbin/ping` always returns 1; cron PATH starts with `/usr/sbin` | `PATH=/opt/sbin:/opt/bin:...` in `vpn-watchdog.sh` and `/opt/etc/crontab` |
+| Every cron job runs twice | jobs defined both in `/opt/etc/crontab` and `/opt/etc/cron.d/` | keep them in one place |
+| SoftEther connects but LAN traffic is not forwarded | `RequireBridgeRoutingMode false` (default) | set it to `true` in `vpn_client.config` (see step 3) |
 | `ipset restore` fails on "create" line | ipset v7.21+ ignores `-exist` for `create` when set already exists | Script uses `flush` + `grep "^add" \| ipset restore -exist` |
 | table 100 cleared after vpn_vpn reconnects | Kernel removes routes when interface goes down | `vpn-split.sh fix` restores it; netfilter hook also checks on every rebuild |
 | `nf_conntrack_fastnat=1` causes connection resets after ~50KB | NDMS resets fastnat to 1 on every iptables rebuild | Netfilter hook sets it to 0 on every rebuild |
@@ -210,15 +234,7 @@ reboot
 opkg install iptables curl
 ```
 
-**Cron daemon** on KN-1011 uses `/opt/etc/cron.d/` directory (not `/opt/var/spool/cron/crontabs/`).  
-The init script is `S10cron` (installed via `opkg install cron`).  
-Each file in `cron.d` is a system crontab with format: `min hour dom mon dow user command`
-
-```sh
-# Example: /opt/etc/cron.d/vpnsplit
-*/5 * * * * root /opt/bin/vpn-watchdog.sh
-0 3 * * 0 root /opt/bin/update-russia-list.sh
-```
+**Cron daemon:** Entware `cron` (`S10cron`) reads `/opt/etc/crontab` and `/opt/etc/cron.d/*` (system crontab format: `min hour dom mon dow user command`). Put the jobs in one of them only — see step 8.
 
 **Multiple VPN clients on the same hub:** each client needs a unique TAP IP. Update `VPN_IP` in `vpn-split.sh`:
 ```sh
@@ -233,8 +249,30 @@ Current TAP IP allocations:
 | 192.168.30.11 | Netcraze Ultra NC-1812 |
 | 192.168.30.12 | Keenetic KN-1011 #1 |
 | 192.168.30.13 | Keenetic KN-1011 #2 |
+| 192.168.30.14 | Keenetic KN-1012 |
 | 192.168.30.20 | MikroTik hAP ax² |
 
 **Entware startup** is handled by `opt-ndmsv2` package, which registers an NDMS hook that starts all `/opt/etc/init.d/S??*` scripts at boot. No additional configuration needed.
 
 **No python3?** The `update-russia-list.sh` script auto-detects python3 availability. On routers without it (limited storage), it falls back to shell-only JSON parsing via `grep`.
+
+### Keenetic Giga KN-1012
+
+| Parameter | Value |
+|-----------|-------|
+| Architecture | aarch64 (`aarch64-k3.10` feed, same as Netcraze Ultra) |
+| NDMS version | 5.1.x |
+| Entware SSH | dropbear on port **22** after a fresh OPKG install (not 222) |
+| Default LAN | 192.168.1.0/24 |
+| NDMS CLI from Entware shell | `ndmc -c "<command>"`, e.g. `ndmc -c "system configuration save"` |
+
+#### Managing a router without a public IP (KeenDNS cloud only)
+
+If the router is behind CGNAT and reachable only via its KeenDNS cloud name (`https://<id>.netcraze.io` / `.keenetic.io`), only the web UI is proxied — no SSH. Two ways in:
+
+1. **RCI HTTP API over the KeenDNS URL** — runs any NDMS CLI command:
+   - `GET /auth` → `401` with headers `X-NDM-Realm` and `X-NDM-Challenge` (+ session cookie);
+   - `POST /auth` with JSON `{"login":"admin","password":"<sha256(challenge + md5(login:realm:password))>"}` → `200`;
+   - `POST /rci/` with `[{"parse":"show version"}, {"parse":"system configuration save"}]`.
+2. **A management tunnel to a router you control** — create an L2TP client through RCI (`interface L2TP0`, `peer <your-ip>`, `authentication identity/password`, `no ip global`, `no ip name-servers`, `ipcp no dns-routes`, `security-level private`, `connect via ISP`, `up`, then `system configuration save`) and SSH to Entware over that tunnel. If the remote LAN overlaps yours, masquerade on your side. Disable the server side when you are done; the client can stay configured for later maintenance.
+

@@ -1,5 +1,8 @@
 #!/bin/sh
-# VPN Watchdog — runs every minute via cron
+# PATH: /opt first! Stock NDMS /usr/sbin/ping always returns 1, which would make
+# the watchdog think the tunnel is dead and reconnect it every run.
+PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+# VPN Watchdog — runs every 5 minutes via cron
 # Re-applies rules that NDMS periodically wipes (FORWARD, NAT, fastnat)
 
 VPN_IF="vpn_vpn"
