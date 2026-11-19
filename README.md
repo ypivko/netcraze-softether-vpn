@@ -34,6 +34,10 @@ LAN devices (192.168.1.0/24)
 | `vpn-watchdog.sh` | `/opt/bin/vpn-watchdog.sh` | Cron watchdog every 5 min: reconnects VPN if down, calls `fix` |
 | `update-russia-list.sh` | `/opt/bin/update-russia-list.sh` | Downloads Russia IP prefixes from RIPE (weekly cron) |
 | `ndm/netfilter.d/10-vpn-split.sh` | `/opt/etc/ndm/netfilter.d/10-vpn-split.sh` | **NDMS netfilter hook** — restores all rules after every NDMS iptables rebuild |
+| `ndm/netfilter.d/20-dns-split.sh` | `/opt/etc/ndm/netfilter.d/20-dns-split.sh` | *Optional, DNS anti-poison:* redirects LAN DNS to local dnsmasq |
+| `dns/dnsmasq.conf` | `/opt/etc/dnsmasq.conf` | *Optional, DNS anti-poison:* dnsmasq on :5354, `.ru/.su/.рф` direct to Yandex |
+| `dns/dnsmasq.servers` | `/opt/etc/dnsmasq.servers` | *Optional, DNS anti-poison:* upstream list (tunnel resolver, then Yandex) |
+| `dns/dns-failover.sh` | `/opt/bin/dns-failover.sh` | *Optional, DNS anti-poison:* cron every minute, switches to Yandex while the tunnel is down |
 | `DIAGNOSTICS.md` | — | Troubleshooting runbook |
 
 ## Prerequisites
@@ -163,6 +167,65 @@ Entware ships with `root` / `keenetic`. Change it right away:
 ssh -p 222 root@<router-ip> passwd
 ```
 
+### 10. DNS anti-poison (optional, recommended)
+
+Split tunneling only routes **traffic**. DNS still goes to the ISP resolver, and in Russia it returns fake or empty answers for blocked foreign domains (Instagram, ChatGPT, etc.). The site is then broken even though its traffic would go through the VPN. Fix: resolve foreign names on the VPS through the tunnel, keep Russian zones on a Russian resolver.
+
+```
+LAN client :53 --DNAT--> dnsmasq :5354 on the router
+   .ru / .su / .рф     --> 77.88.8.8 (Yandex, direct)
+   everything else     --> 192.168.30.1 (resolver on the VPS, via tunnel)
+                           fallback 77.88.8.8 (strict-order)
+```
+
+**VPS side** (once per server). Make a resolver listen on the TAP bridge IP. With systemd-resolved, in `/etc/systemd/resolved.conf`:
+
+```ini
+[Resolve]
+DNS=1.1.1.1 9.9.9.9
+DNSStubListenerExtra=192.168.30.1
+```
+
+`systemctl restart systemd-resolved`, then check from the router: `nslookup google.com 192.168.30.1`. Allow port 53 only from the tunnel subnet (192.168.30.0/24), so the resolver is not open to the internet.
+
+**Router side.** Edit the LAN IP in `dns/dnsmasq.conf` and the LAN/IP in `20-dns-split.sh` (office-style LANs such as 192.168.2.0/24 need both changed), then:
+
+```sh
+ssh -p 222 root@<router-ip> 'opkg update && opkg install dnsmasq-full'
+
+scp -O -P 222 dns/dnsmasq.conf      root@<router-ip>:/opt/etc/dnsmasq.conf
+scp -O -P 222 dns/dnsmasq.servers   root@<router-ip>:/opt/etc/dnsmasq.servers
+scp -O -P 222 dns/dns-failover.sh   root@<router-ip>:/opt/bin/dns-failover.sh
+scp -O -P 222 ndm/netfilter.d/20-dns-split.sh root@<router-ip>:/opt/etc/ndm/netfilter.d/20-dns-split.sh
+
+ssh -p 222 root@<router-ip> '
+chmod +x /opt/bin/dns-failover.sh /opt/etc/ndm/netfilter.d/20-dns-split.sh
+for s in /opt/etc/init.d/S*dnsmasq; do $s restart; done
+table=nat type=iptables /opt/etc/ndm/netfilter.d/20-dns-split.sh
+echo "*/1 * * * * root /opt/bin/dns-failover.sh" >> /opt/etc/crontab
+/opt/etc/init.d/S10cron restart'
+```
+
+Check:
+
+```sh
+nslookup instagram.com 127.0.0.1:5354     # real Meta address, not a stub/empty
+iptables -t nat -S PREROUTING | grep 5354 # two DNAT rules at the top
+cat /opt/etc/dnsmasq.servers              # tunnel resolver first while the tunnel is up
+```
+
+**Failover.** `strict-order` alone is not enough: while the tunnel is down dnsmasq still waits on the dead resolver and clients get "site not found". `dns-failover.sh` pings the VPS gateway every minute and rewrites `dnsmasq.servers` to Yandex only, then back when the tunnel returns (logged to `vpn-watchdog.log`). Test it: `iptables -I OUTPUT -d 192.168.30.1 -j DROP`, wait a minute, the servers file should show only `77.88.8.8`; then `iptables -D OUTPUT -d 192.168.30.1 -j DROP`.
+
+**Rollback:**
+
+```sh
+rm /opt/etc/ndm/netfilter.d/20-dns-split.sh
+for pr in udp tcp; do iptables -t nat -D PREROUTING -s 192.168.1.0/24 -p $pr --dport 53 -j DNAT --to-destination 192.168.1.1:5354; done
+sed -i '/dns-failover/d' /opt/etc/crontab && /opt/etc/init.d/S10cron restart
+```
+
+Clients fall back to the NDMS resolver right away.
+
 ## How it works
 
 1. **ipset** `russia` loaded with ~11250 Russian IP prefixes from RIPE
@@ -186,6 +249,7 @@ ssh -p 222 root@<router-ip> passwd
 | Update Russia list | `/opt/bin/update-russia-list.sh` |
 | Add IP to Russia list | `ipset add russia <IP> && echo "add russia <IP>" >> /opt/etc/russia.ipset` |
 | Check site routing | `ipset test russia <IP>` |
+| Check DNS (anti-poison) | `nslookup <name> 127.0.0.1:5354`, `cat /opt/etc/dnsmasq.servers` |
 
 ## Known issues
 
@@ -198,6 +262,8 @@ ssh -p 222 root@<router-ip> passwd
 | Every cron job runs twice | jobs defined both in `/opt/etc/crontab` and `/opt/etc/cron.d/` | keep them in one place |
 | SoftEther connects but LAN traffic is not forwarded | `RequireBridgeRoutingMode false` (default) | set it to `true` in `vpn_client.config` (see step 3) |
 | Tunnel reconnects several times a day for no reason | watchdog treated one lost ping as a dead tunnel and forced a reconnect | `vpn-watchdog.sh` reconnects only when all 3 pings fail (`ping -c3`) |
+| Foreign site does not open ("site not found" / wrong IP) although its traffic goes via VPN | ISP resolver poisons DNS for blocked domains | DNS anti-poison, step 10 |
+| "Site not found" for a few minutes while the tunnel reconnects | dnsmasq keeps querying the dead tunnel resolver | `dns-failover.sh` every minute (step 10) |
 | `ipset restore` fails on "create" line | ipset v7.21+ ignores `-exist` for `create` when set already exists | Script uses `flush` + `grep "^add" \| ipset restore -exist` |
 | table 100 cleared after vpn_vpn reconnects | Kernel removes routes when interface goes down | `vpn-split.sh fix` restores it; netfilter hook also checks on every rebuild |
 | `nf_conntrack_fastnat=1` causes connection resets after ~50KB | NDMS resets fastnat to 1 on every iptables rebuild | Netfilter hook sets it to 0 on every rebuild |
