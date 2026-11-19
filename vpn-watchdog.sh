@@ -22,7 +22,8 @@ if ! ip link show $VPN_IF >/dev/null 2>&1; then
 fi
 
 # 2. Check VPN connectivity
-if ! ping -c1 -W3 192.168.30.1 >/dev/null 2>&1; then
+# 3 pings: a single lost packet on a lossy path must not tear down a working tunnel
+if ! ping -c3 -W3 192.168.30.1 >/dev/null 2>&1; then
     echo "$(date): VPN ping failed, reconnecting" >> $LOG
     $VPNCMD /CLIENT localhost /CMD AccountDisconnect $ACCOUNT >/dev/null 2>&1
     sleep 3

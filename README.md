@@ -197,6 +197,7 @@ ssh -p 222 root@<router-ip> passwd
 | Watchdog reconnects the tunnel every run | NDMS `/usr/sbin/ping` always returns 1; cron PATH starts with `/usr/sbin` | `PATH=/opt/sbin:/opt/bin:...` in `vpn-watchdog.sh` and `/opt/etc/crontab` |
 | Every cron job runs twice | jobs defined both in `/opt/etc/crontab` and `/opt/etc/cron.d/` | keep them in one place |
 | SoftEther connects but LAN traffic is not forwarded | `RequireBridgeRoutingMode false` (default) | set it to `true` in `vpn_client.config` (see step 3) |
+| Tunnel reconnects several times a day for no reason | watchdog treated one lost ping as a dead tunnel and forced a reconnect | `vpn-watchdog.sh` reconnects only when all 3 pings fail (`ping -c3`) |
 | `ipset restore` fails on "create" line | ipset v7.21+ ignores `-exist` for `create` when set already exists | Script uses `flush` + `grep "^add" \| ipset restore -exist` |
 | table 100 cleared after vpn_vpn reconnects | Kernel removes routes when interface goes down | `vpn-split.sh fix` restores it; netfilter hook also checks on every rebuild |
 | `nf_conntrack_fastnat=1` causes connection resets after ~50KB | NDMS resets fastnat to 1 on every iptables rebuild | Netfilter hook sets it to 0 on every rebuild |
